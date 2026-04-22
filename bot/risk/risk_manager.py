@@ -23,7 +23,7 @@ class RiskEngine:
         passed, reason = self.validate_signal(signal)
         if passed:
             logger.info("Signal validated for %s → forwarding to execution.", signal["symbol"])
-            await self.event_bus.publish(Event(type=EventType.ORDER_REQUEST, data=signal))
+            await self.event_bus.publish(Event(type=EventType.APPROVED_ORDER, data=signal))
         else:
             # FIX: publish an ERROR event so the API can surface rejection reason to caller
             logger.warning("Signal REJECTED by risk engine: %s — reason: %s", signal, reason)

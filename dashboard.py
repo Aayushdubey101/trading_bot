@@ -22,6 +22,7 @@ from typing import Optional
 import httpx
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -38,37 +39,57 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
+/* Modern typography and aesthetics */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
 .main-header {
-    background: linear-gradient(135deg,#0f0f23 0%,#1a1a3e 100%);
-    padding:1.2rem 2rem; border-radius:12px; margin-bottom:1.5rem;
-    border:1px solid #2d2d5e;
+    background: var(--secondary-background-color);
+    padding: 2.5rem 2rem; border-radius: 16px; margin-bottom: 2rem;
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
 }
-.main-header h1 { color:#00d4ff; margin:0; font-size:1.7rem; font-weight:700; }
-.main-header p  { color:#8888aa; margin:0.3rem 0 0; font-size:0.85rem; }
+.main-header h1 { 
+    color: var(--primary-color); margin: 0; font-size: 2.4rem; font-weight: 800; 
+    letter-spacing: -1px;
+}
+.main-header p  { color: var(--text-color); opacity: 0.8; margin: 0.5rem 0 0; font-size: 1.05rem; }
 
 .result-ok {
-    background:#0a2e1a; border:1px solid #00e676; border-radius:10px;
-    padding:1.1rem 1.4rem; margin-top:1rem;
+    background: rgba(0, 230, 118, 0.1); border: 1px solid #00E676; border-radius: 12px;
+    padding: 1.5rem; margin-top: 1rem;
 }
 .result-err {
-    background:#2e0a0a; border:1px solid #ff5252; border-radius:10px;
-    padding:1.1rem 1.4rem; margin-top:1rem;
+    background: rgba(255, 82, 82, 0.1); border: 1px solid #FF5252; border-radius: 12px;
+    padding: 1.5rem; margin-top: 1rem;
 }
-.result-ok h4 { color:#00e676; margin:0 0 .7rem; }
-.result-err h4 { color:#ff5252; margin:0 0 .7rem; }
-.kv { display:flex; justify-content:space-between; padding:3px 0;
-      border-bottom:1px solid #1a2e1a; font-size:.84rem; }
-.kv .k { color:#8888aa; } .kv .v { color:#e0e0e0; font-weight:500; }
+.result-ok h4 { color: #00E676; margin: 0 0 1rem; font-weight: 700; }
+.result-err h4 { color: #FF5252; margin: 0 0 1rem; font-weight: 700; }
+.kv { display: flex; justify-content: space-between; padding: 6px 0;
+      border-bottom: 1px solid rgba(128, 128, 128, 0.1); font-size: 0.95rem; }
+.kv .k { color: var(--text-color); opacity: 0.7; } .kv .v { color: var(--text-color); font-weight: 600; }
 
-.server-ok  { color:#00e676; font-weight:600; }
-.server-err { color:#ff5252; font-weight:600; }
-
-section[data-testid="stSidebar"] { background:#0d0d1e; }
+.server-ok  { color: #00E676; font-weight: 700; background: rgba(0,230,118,0.1); padding: 6px 12px; border-radius: 6px; display: inline-block;}
+.server-err { color: #FF5252; font-weight: 700; background: rgba(255,82,82,0.1); padding: 6px 12px; border-radius: 6px; display: inline-block;}
 
 .log-box {
-    background:#0a0a15; border:1px solid #2d2d5e; border-radius:8px;
-    padding:1rem; font-family:'Courier New',monospace; font-size:.72rem;
-    color:#a0a0c0; max-height:420px; overflow-y:auto; white-space:pre-wrap;
+    background: var(--secondary-background-color); border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 10px;
+    padding: 1.2rem; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 0.85rem;
+    color: var(--text-color); max-height: 420px; overflow-y: auto; white-space: pre-wrap;
+}
+
+/* Tab styling overrides */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 50px;
+    background-color: transparent;
+    border-radius: 4px 4px 0px 0px;
+    gap: 1px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    font-weight: 600;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -147,6 +168,51 @@ def api_post(path: str, payload: dict) -> tuple[bool, any]:
         return False, str(exc)
 
 
+def get_klines(symbol: str, interval: str = "1m", limit: int = 50) -> Optional[pd.DataFrame]:
+    """Fetch recent klines from Binance Futures Testnet for plotting."""
+    url = "https://testnet.binancefuture.com/fapi/v1/klines"
+    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+    try:
+        r = httpx.get(url, params=params, timeout=5.0)
+        if r.status_code == 200:
+            data = r.json()
+            df = pd.DataFrame(data, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_volume", "count",
+                "taker_buy_volume", "taker_buy_quote_volume", "ignore"
+            ])
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)
+            return df
+    except Exception:
+        pass
+    return None
+
+
+def render_candle_chart(symbol: str):
+    df = get_klines(symbol)
+    if df is not None and not df.empty:
+        fig = go.Figure(data=[go.Candlestick(
+            x=df['open_time'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            increasing_line_color='#00e676',
+            decreasing_line_color='#ff5252'
+        )])
+        fig.update_layout(
+            margin=dict(l=0, r=0, t=30, b=0),
+            height=280,
+            xaxis_rangeslider_visible=False,
+            title=dict(text=f"{symbol} (1m)", font=dict(size=14))
+        )
+        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+    else:
+        st.caption("Chart data unavailable.")
+
+
 def _kv_rows(d: dict) -> str:
     return "".join(
         f'<div class="kv"><span class="k">{k}</span><span class="v">{v}</span></div>'
@@ -216,7 +282,7 @@ with tab_place:
             st.caption("⚠️  API server must be running to place orders.")
 
     with col_preview:
-        st.markdown("#### Live Price Reference")
+        st.markdown("#### Live Price & Chart")
 
         ok, ticker = api_get("/ticker/" + (symbol or "BTCUSDT"))
         if ok and isinstance(ticker, dict):
@@ -224,6 +290,9 @@ with tab_place:
             st.metric(symbol or "—", f"${live_p:,.2f}")
         else:
             st.metric(symbol or "—", "—")
+
+        if symbol:
+            render_candle_chart(symbol)
 
         st.markdown("#### Order Preview")
         preview = {

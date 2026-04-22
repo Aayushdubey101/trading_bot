@@ -49,19 +49,22 @@ class BinanceAsyncClient:
         signed: bool = False,
         params: Dict[str, Any] = None,
     ) -> Any:
-        params = params or {}
-        if signed:
-            params = self._sign(params)
-
+        original_params = params.copy() if params else {}
         headers = {"X-MBX-APIKEY": self.api_key} if self.api_key else {}
 
         async def _do_request():
+            # Create a fresh copy of parameters for each attempt
+            # so that timestamps and signatures are regenerated cleanly!
+            req_params = original_params.copy()
+            if signed:
+                req_params = self._sign(req_params)
+
             if method == "GET":
-                response = await self._client.get(endpoint, params=params, headers=headers)
+                response = await self._client.get(endpoint, params=req_params, headers=headers)
             elif method == "POST":
-                response = await self._client.post(endpoint, data=params, headers=headers)
+                response = await self._client.post(endpoint, data=req_params, headers=headers)
             elif method == "DELETE":
-                response = await self._client.delete(endpoint, params=params, headers=headers)
+                response = await self._client.delete(endpoint, params=req_params, headers=headers)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 

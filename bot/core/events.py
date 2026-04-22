@@ -4,7 +4,9 @@ from pydantic import BaseModel
 
 class EventType(str, Enum):
     MARKET_DATA = "MARKET_DATA"
+    RAW_SIGNAL = "RAW_SIGNAL"
     SIGNAL = "SIGNAL"
+    APPROVED_ORDER = "APPROVED_ORDER"
     ORDER_REQUEST = "ORDER_REQUEST"
     ORDER_FILLED = "ORDER_FILLED"
     ERROR = "ERROR"

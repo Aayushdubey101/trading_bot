@@ -85,22 +85,56 @@ You can also create a local .env file from .env.example.
 
 ## Run The App
 
-Use one of these commands from the project root:
+The application consists of a backend API server and a frontend Streamlit dashboard.
+
+### 1. Start the API Server
+
+Run the following command from the project root to start the backend server:
 
 ```bash
 python __main__.py serve --host 127.0.0.1 --port 8000
-```
-
-or:
-
-```bash
-python -m bot.cli.main serve --host 127.0.0.1 --port 8000
 ```
 
 When running successfully, the API is available at:
 
 - http://127.0.0.1:8000
 - Swagger docs: http://127.0.0.1:8000/docs
+
+### 2. Start the Dashboard
+
+In a new terminal window (with your virtual environment activated), start the visual dashboard:
+
+```bash
+python -m streamlit run dashboard.py
+```
+
+This will automatically open the dashboard in your browser (typically at http://localhost:8501), where you can monitor live prices, view the candlestick chart, and place orders through the risk/execution pipeline.
+
+### 3. Using the CLI
+
+If you prefer to test manually without the dashboard, you can use the built-in CLI:
+
+- **Check Account Balance**: `python __main__.py account`
+- **Place Market Buy**: `python __main__.py place --symbol BTCUSDT --side BUY --type MARKET --qty 0.01`
+- **Place Market Sell**: `python __main__.py place --symbol BTCUSDT --side SELL --type MARKET --qty 0.01`
+- **Place Limit Order**: `python __main__.py place --symbol BTCUSDT --side BUY --type LIMIT --qty 0.01 --price 60000`
+
+## Screenshots & Demos
+
+**Streamlit Dashboard:**
+![Streamlit Dashboard](assets/demo1.png)
+
+**CLI - Account Balance:**
+![CLI Account](assets/demo2.png)
+
+**CLI - Market Buy:**
+![CLI Buy](assets/demo3.png)
+
+**CLI - Market Sell:**
+![CLI Sell](assets/demo4.png)
+
+**CLI - Limit Order:**
+![CLI Limit](assets/demo5.png)
 
 ## API Usage Examples
 

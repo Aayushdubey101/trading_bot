@@ -1,302 +1,208 @@
 # Project Structure
 
-This document is a compact repository map for the Binance Futures Testnet Trading Bot. It is intended to help a coding agent understand the codebase quickly without rereading every file from scratch.
+This document maps the current repository layout and runtime behavior of the Quant Trading System in this project.
 
 ## High-Level Purpose
 
-The project is a Python CLI application for placing Binance USDT-M Futures Testnet orders and viewing account balances. It supports `MARKET`, `LIMIT`, and `STOP_MARKET` order types, validates inputs locally, signs API requests, retries transient failures, and logs activity to rotating files.
+The project is an event-driven, async Python trading system for Binance Futures Testnet. It provides:
+
+- A CLI entrypoint to start a FastAPI service.
+- API endpoints to read account/positions, publish manual order signals, and fetch stored orders.
+- A core event bus connecting market data, strategy signals, risk checks, execution, and persistence.
+- Strategy modules (mean reversion and momentum) that generate signals from live ticker streams.
 
 ## Repository Map
 
 ```text
 trading_bot/
+├── .dockerignore
 ├── .env.example
+├── .gitignore
+├── Dockerfile
 ├── __main__.py
 ├── README.md
+├── project_structure.md
 ├── requirements.txt
+├── agents/
+│   ├── execution_agent.py
+│   ├── risk_agent.py
+│   └── strategy_agent.py
 ├── bot/
 │   ├── __init__.py
-│   ├── cli.py
-│   ├── client.py
-│   ├── logging_config.py
-│   ├── orders.py
-│   └── validators.py
-├── logs/
-│   ├── limit_order_sample.log
-│   └── market_order_sample.log
+│   ├── api/
+│   │   ├── routes.py
+│   │   └── server.py
+│   ├── backtest/
+│   │   └── engine.py
+│   ├── cli/
+│   │   └── main.py
+│   ├── client/
+│   │   └── async_client.py
+│   ├── core/
+│   │   ├── config.py
+│   │   ├── db.py
+│   │   ├── event_bus.py
+│   │   ├── events.py
+│   │   ├── logging.py
+│   │   ├── models.py
+│   │   └── utils.py
+│   ├── data/
+│   │   ├── orderbook.py
+│   │   └── ws_client.py
+│   ├── execution/
+│   │   └── executor.py
+│   ├── risk/
+│   │   └── risk_manager.py
+│   └── strategy/
+│       ├── base.py
+│       ├── engine.py
+│       ├── mean_reversion.py
+│       └── momentum.py
 └── tests/
-    ├── test_orders.py
-    └── test_validators.py
+    ├── test_api.py
+    └── test_risk.py
 ```
 
-## Execution Flow
+## Startup Flow
 
-The runtime path is:
+1. `__main__.py` calls `bot.cli.main.main()`.
+2. `bot/cli/main.py` parses `serve` command plus host/port.
+3. CLI initializes structured logging via `bot.core.logging.setup_logging()`.
+4. CLI starts Uvicorn with `bot.api.server:app`.
+5. In FastAPI startup:
+   - DB schema is initialized.
+   - Event bus loop is started.
+   - Binance websocket listener is started.
+6. Strategies consume market data and publish signals.
+7. Risk engine validates signals and publishes order requests.
+8. Execution engine places orders with Binance and publishes filled/error events.
+9. Database subscriber persists `ORDER_FILLED` events to SQLite.
 
-1. `__main__.py` imports and runs `bot.cli.main()`.
-2. `bot.cli` parses command-line arguments with `argparse`.
-3. `bot.validators.validate_all()` normalizes and validates symbol, side, order type, quantity, and price.
-4. `bot.orders.place_order()` converts validated input into a higher-level order flow.
-5. `bot.client.BinanceClient` signs and sends HTTP requests to the Binance Futures Testnet.
-6. `bot.logging_config.setup_logging()` configures rotating file logging and console warnings.
-
-## Dependency Graph
+## Event-Driven Pipeline
 
 ```mermaid
 graph TD
-    A[__main__.py] --> B[bot.cli.main]
-    B --> C[bot.validators]
-    B --> D[bot.orders]
-    B --> E[bot.client.BinanceClient]
-    B --> F[bot.logging_config.setup_logging]
-    D --> E
-    D --> F
-    E --> F
-    G[tests/test_validators.py] --> C
-    H[tests/test_orders.py] --> D
-    H --> E
+    WS[BinanceWebsocketClient] -->|MARKET_DATA| EB[EventBus]
+    EB --> MR[MeanReversionStrategy]
+    EB --> MOM[MomentumStrategy]
+    MR -->|SIGNAL| EB
+    MOM -->|SIGNAL| EB
+    API[POST /order] -->|SIGNAL| EB
+    EB --> RISK[RiskEngine]
+    RISK -->|ORDER_REQUEST| EB
+    EB --> EXEC[ExecutionEngine]
+    EXEC -->|ORDER_FILLED or ERROR| EB
+    EB --> DB[Database.on_order_filled]
+    DB --> SQLITE[(SQLite: orders)]
 ```
 
-## File-by-File Notes
+## API Endpoints
 
-### `.env.example`
+Defined in `bot/api/routes.py`:
 
-Template for local credentials. It documents the two environment variables used by the client:
+- `GET /account`: Returns signed account data from Binance.
+- `GET /positions`: Filters and returns non-zero positions.
+- `POST /order`: Publishes a manual trading signal (`SIGNAL`) to the event bus.
+- `GET /orders`: Returns recent persisted orders from SQLite.
 
-- `BINANCE_TESTNET_API_KEY`
-- `BINANCE_TESTNET_API_SECRET`
+## Core Modules
 
-It warns not to commit real secrets.
+### `bot/core/config.py`
 
-### `__main__.py`
+Pydantic settings loaded from `.env` and environment variables:
 
-Package entry point for `python -m trading_bot`-style execution. It simply imports `main` from `bot.cli` and runs it.
+- Binance credentials and URLs.
+- Risk limits (`max_position_size`, `max_leverage`, `max_daily_loss_usdt`).
+- API host/port and DB path.
 
-### `README.md`
+### `bot/core/event_bus.py`
 
-User-facing setup and usage guide. It covers:
+Async event queue with subscribers by `EventType`. It owns:
 
-- Project purpose and CLI examples.
-- Environment variable setup for Windows, macOS, and Linux.
-- Order placement examples for `MARKET`, `LIMIT`, and `STOP_MARKET`.
-- Account balance lookup.
-- Logging behavior and sample output.
-- Validation and error-handling expectations.
-- Design decisions and assumptions.
+- `subscribe(event_type, callback)`
+- `publish(event)`
+- background `_process_events()` loop
+- `start()` and `stop()` lifecycle
 
-Important detail: the README describes the project as a testnet-only Binance Futures bot and references `logs/trading_bot.log` as the active runtime log file.
+### `bot/core/events.py`
 
-### `requirements.txt`
+Defines the typed event contract:
 
-Only two runtime dependencies are listed:
+- `EventType`: `MARKET_DATA`, `SIGNAL`, `ORDER_REQUEST`, `ORDER_FILLED`, `ERROR`, `SYSTEM_START`, `SYSTEM_SHUTDOWN`
+- `Event` model: `{type, data}`
 
-- `requests>=2.31.0`
-- `urllib3>=2.0.0`
+### `bot/core/db.py`
 
-Everything else is standard library.
+SQLite persistence (`aiosqlite`) for executed orders. Subscribes to `ORDER_FILLED` and inserts parsed fields into `orders` table.
 
-### `bot/__init__.py`
+### `bot/core/logging.py`
 
-Package metadata only.
+Configures console + rotating JSON file logging at `logs/trading_bot.json`.
 
-- `__version__ = "1.0.0"`
-- `__author__ = "Aayush Dubey"`
+## Trading Modules
 
-### `bot/cli.py`
+### `bot/client/async_client.py`
 
-Command-line interface layer.
+Async Binance REST client (`httpx`) with:
 
-Responsibilities:
+- HMAC-SHA256 request signing for signed endpoints.
+- Retries via `retry_async` helper.
+- Unified `BinanceAPIError` on API/non-JSON failures.
 
-- Build the `argparse` parser.
-- Accept global flags for API credentials and log level.
-- Provide `place` and `account` subcommands.
-- Render console output for order requests, order results, and account balances.
-- Reinitialize logging with the chosen verbosity.
+### `bot/data/ws_client.py`
 
-Main functions and behavior:
+Binance websocket consumer with reconnect loop. Publishes each message as `MARKET_DATA`.
 
-- `_supports_colour()` checks whether stdout is a TTY.
-- `_c()` applies ANSI color codes when supported.
-- `_print_order_request()` prints the normalized request summary.
-- `_print_order_result()` prints success or failure formatting.
-- `cmd_place()` validates input, places the order, and returns an exit code.
-- `cmd_account()` fetches balances and prints funded assets only.
-- `build_parser()` defines the CLI interface.
-- `main()` wires parsing, logging setup, client creation, and dispatch.
+### `bot/data/orderbook.py`
 
-Observed details:
+In-memory market state store for latest symbol prices and depth snapshots.
 
-- `place` requires `--symbol`, `--side`, `--type`, and `--qty`.
-- `--price` is required for `LIMIT` and `STOP_MARKET` validation paths.
-- Color helpers are intentionally lightweight and safe on Windows terminals that do not support ANSI codes.
+### `bot/strategy/base.py`
 
-### `bot/client.py`
+Abstract strategy base that subscribes to `MARKET_DATA`, updates order book, and publishes `SIGNAL` when `generate_signal(...)` returns data.
 
-Low-level Binance Futures Testnet REST client.
+### `bot/strategy/mean_reversion.py`
 
-Responsibilities:
+Tracks rolling prices per symbol and emits contrarian market signals on deviation from moving average.
 
-- Read API keys from arguments or environment variables.
-- Build signed requests using HMAC-SHA256 and a millisecond timestamp.
-- Retry transient failures using `requests` plus `urllib3.Retry`.
-- Log outgoing request metadata and incoming response bodies.
-- Raise a custom `BinanceAPIError` for API failures.
+### `bot/strategy/momentum.py`
 
-Important classes and functions:
+Tracks rolling prices per symbol and emits directional market signals based on momentum threshold.
 
-- `BinanceAPIError` stores `status_code`, Binance `code`, and `msg`.
-- `_build_session()` creates a `requests.Session` with retry behavior for common transient statuses and network failures.
-- `BinanceClient.__init__()` initializes credentials, base URL, timeout, and session.
-- `BinanceClient._sign()` appends timestamp and signature to signed requests.
-- `BinanceClient._request()` performs HTTP I/O, JSON parsing, error conversion, and logging.
-- `BinanceClient.place_order()` sends POST requests to `/fapi/v1/order`.
-- `BinanceClient.get_exchange_info()` fetches `/fapi/v1/exchangeInfo`.
-- `BinanceClient.get_account()` fetches `/fapi/v2/account`.
+### `bot/risk/risk_manager.py`
 
-Endpoint constants:
+Subscribes to `SIGNAL`, applies basic checks (positive quantity, max position size), and forwards valid signals as `ORDER_REQUEST`.
 
-- `TESTNET_BASE_URL = "https://testnet.binancefuture.com"`
-- `EP_ORDER = "/fapi/v1/order"`
-- `EP_EXCHANGE_INFO = "/fapi/v1/exchangeInfo"`
-- `EP_ACCOUNT = "/fapi/v2/account"`
+### `bot/execution/executor.py`
 
-Behavior worth knowing:
+Subscribes to `ORDER_REQUEST`, places orders through `BinanceAsyncClient`, then publishes `ORDER_FILLED` or `ERROR`.
 
-- Missing credentials trigger a warning, not an immediate exception.
-- Non-JSON responses are converted into `BinanceAPIError` with code `-1`.
-- Any negative Binance `code` in JSON is treated as an error.
-- Network connection problems become Python `ConnectionError`.
-- Request timeouts become Python `TimeoutError`.
+### `bot/backtest/engine.py`
 
-### `bot/logging_config.py`
+Utility to replay historical rows as `MARKET_DATA` events for offline strategy evaluation.
 
-Central logging setup.
+## CLI and Entrypoints
 
-Responsibilities:
+- `__main__.py`: package entrypoint.
+- `bot/cli/main.py`: currently supports `serve` command only.
+- Typical run command: `python -m trading_bot serve --host 127.0.0.1 --port 8000`
 
-- Create `logs/` if it does not exist.
-- Configure a rotating file handler at `logs/trading_bot.log`.
-- Configure a console handler that only emits warnings and above.
-- Keep configuration idempotent through `_CONFIGURED`.
+## Tests
 
-Key details:
+- `tests/test_api.py`: mocks account client call and validates `GET /account` behavior.
+- `tests/test_risk.py`: validates risk engine signal filtering and forwarding behavior.
 
-- File handler level is `DEBUG`.
-- Rotation is `5 MB` with `3` backups.
-- Console handler level is `WARNING`.
-- Formatter includes timestamp, level, logger name, and message.
+## Supporting Files
 
-### `bot/orders.py`
-
-High-level order orchestration between CLI input and the raw client.
-
-Responsibilities:
-
-- Call `BinanceClient.place_order()` with normalized parameters.
-- Convert raw response dicts into a structured `OrderResult` dataclass.
-- Translate exceptions into a failure result instead of raising them to the CLI.
-- Log the order lifecycle.
-
-Important pieces:
-
-- `OrderResult` captures `success`, order metadata, and `error_msg`.
-- `OrderResult.from_response()` maps Binance response keys into a normalized object.
-- `OrderResult.from_error()` creates a failure object.
-- `place_order()` handles `MARKET`, `LIMIT`, and `STOP_MARKET` request shaping.
-
-Behavior worth knowing:
-
-- `LIMIT` orders get `time_in_force = "GTC"`.
-- `STOP_MARKET` orders pass `stop_price`.
-- Binance, network, timeout, and unexpected exceptions are all converted into a failure `OrderResult`.
-
-### `bot/validators.py`
-
-Pure validation layer with no external dependencies.
-
-Constants:
-
-- `VALID_SIDES = {"BUY", "SELL"}`
-- `VALID_ORDER_TYPES = {"MARKET", "LIMIT", "STOP_MARKET"}`
-- `SYMBOL_RE = r"^[A-Z]{2,20}USDT$"`
-
-Functions:
-
-- `validate_symbol()` uppercases and validates USDT-margined symbols.
-- `validate_side()` accepts only `BUY` or `SELL`.
-- `validate_order_type()` accepts only supported order types.
-- `validate_quantity()` ensures positive decimal input.
-- `validate_price()` enforces price rules by order type.
-- `validate_all()` runs every validator and returns a normalized dict.
-
-Behavior worth knowing:
-
-- `MARKET` orders ignore `price` if provided.
-- `LIMIT` orders require a positive price.
-- `STOP_MARKET` orders also require a positive price, but it is semantically treated as a stop price.
-- All failures raise `ValueError` with human-readable messages.
-
-### `tests/test_orders.py`
-
-Stdlib `unittest` tests for the order layer.
-
-Coverage includes:
-
-- Successful `MARKET` order handling.
-- Successful `LIMIT` order handling.
-- Binance API error conversion.
-- Network error conversion.
-- Timeout error conversion.
-- Unexpected exception conversion.
-- `OrderResult.from_response()` and `OrderResult.from_error()` behavior.
-
-Implementation note:
-
-- `MagicMock` is used to isolate `place_order()` from real network calls.
-
-### `tests/test_validators.py`
-
-Stdlib `unittest` tests for pure input validation.
-
-Coverage includes:
-
-- Symbol validation and normalization.
-- Side validation and normalization.
-- Order type validation.
-- Quantity validation for positive decimal values.
-- Price validation rules for `LIMIT`, `MARKET`, and `STOP_MARKET`.
-- `validate_all()` integration behavior.
-
-## Runtime Configuration
-
-The project expects either environment variables or CLI flags for credentials.
-
-Environment variables:
-
-- `BINANCE_TESTNET_API_KEY`
-- `BINANCE_TESTNET_API_SECRET`
-
-CLI alternatives:
-
-- `--api-key`
-- `--api-secret`
-
-Other runtime flag:
-
-- `--log-level` controls the logger level passed into `setup_logging()`.
-
-## What Another Agent Should Know First
-
-1. The project is already split into a clean layered design: CLI, validation, orchestration, client, and logging.
-2. The current implementation is testnet-only and hardcodes the Binance Futures testnet base URL.
-3. Validation happens before network calls, so most malformed input should fail locally with `ValueError`.
-4. The logging layer is central to the code path and gets initialized from import time in several modules.
-5. The tests focus on the pure validator layer and the order orchestration layer, not on live HTTP calls.
-
-## Practical Notes For Next Work
-
-- If you change request/response shape in `bot/client.py`, update `bot/orders.py` and the order tests together.
-- If you add a new order type, update `bot/validators.py`, `bot/orders.py`, CLI help text, and likely the README examples.
-- If you alter logging behavior, check both the runtime logs and any expectations in the README.
-- If you add new modules, extend the Mermaid graph here so the repo map stays current.
+- `.env.example`: credentials template.
+- `Dockerfile`: container image definition (Python 3.11 slim).
+- `requirements.txt`: FastAPI, async I/O, Binance client, logging, and test dependencies.
+- `agents/*.py`: auxiliary placeholder agent classes that subscribe to the event bus (not wired into FastAPI app state).
+
+## Notes for Future Contributors
+
+1. This repository is now API/event-driven, not the older CLI order-placement architecture.
+2. The live order path is `SIGNAL -> RiskEngine -> ORDER_REQUEST -> ExecutionEngine -> ORDER_FILLED -> Database`.
+3. Strategy modules are active via app startup and react to websocket ticker messages.
+4. API router dependencies are set by module-level injection in `bot/api/server.py` at startup.
+5. If you change event payload fields, update strategy/risk/execution/db parsing together.

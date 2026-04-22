@@ -1,222 +1,166 @@
-# Binance Futures Testnet Trading Bot
+# Quant Trading System (Binance Futures Testnet)
 
-**Author:** Aayush Dubey  
-**Role Applied:** Python Developer Intern — Primetrade.ai  
+Author: Aayush Dubey  
+Role Applied: Python Developer Intern - Primetrade.ai
 
-A clean, production-structured Python CLI application that places **MARKET**, **LIMIT**, and **STOP_MARKET** orders on the Binance USDT-M Futures Testnet.
+An async, event-driven trading system built with FastAPI for Binance USDT-M Futures Testnet.
 
----
+## What This Project Does
 
-## Project Structure
+- Streams live market data from Binance websocket ticker streams.
+- Generates strategy signals (mean reversion + momentum).
+- Validates signals with risk rules.
+- Executes valid orders via Binance REST API.
+- Persists filled orders in SQLite.
+- Exposes HTTP endpoints for account, positions, manual orders, and recent orders.
 
-```
+## Current Architecture
+
+```text
 trading_bot/
-├── bot/
-│   ├── __init__.py          # Package metadata
-│   ├── client.py            # Binance REST client (signing, retries, error handling)
-│   ├── orders.py            # Order placement logic + OrderResult dataclass
-│   ├── validators.py        # Pure-Python input validation (no deps)
-│   ├── logging_config.py    # Centralised rotating file + console logger
-│   └── cli.py               # argparse CLI entry point
-├── logs/
-│   ├── market_order_sample.log
-│   └── limit_order_sample.log
-├── __main__.py              # python -m trading_bot shortcut
+├── __main__.py
+├── README.md
+├── project_structure.md
 ├── requirements.txt
-└── README.md
+├── Dockerfile
+├── .env.example
+├── agents/
+├── bot/
+│   ├── api/                # FastAPI app + routes
+│   ├── backtest/           # Historical replay engine
+│   ├── cli/                # CLI entrypoint (serve command)
+│   ├── client/             # Binance async REST client
+│   ├── core/               # Config, event bus, models, DB, logging
+│   ├── data/               # Websocket + in-memory orderbook
+│   ├── execution/          # Order execution engine
+│   ├── risk/               # Risk engine
+│   └── strategy/           # Strategy implementations
+└── tests/
+    ├── test_api.py
+    └── test_risk.py
 ```
-
----
 
 ## Setup
 
-### 1. Clone / unzip
+1. Clone and enter project:
 
 ```bash
 cd trading_bot
 ```
 
-### 2. Create a virtual environment (recommended)
+2. Create and activate virtual environment:
 
 ```bash
 python -m venv .venv
 
-# Windows
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# Windows (cmd)
 .venv\Scripts\activate
 
-# macOS / Linux
+# macOS/Linux
 source .venv/bin/activate
 ```
 
-### 3. Install dependencies
+3. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> **Only one external dependency:** `requests` (+ `urllib3` for retry logic).  
-> Everything else is Python stdlib.
-
-### 4. Get Binance Futures Testnet credentials
-
-1. Go to [https://testnet.binancefuture.com](https://testnet.binancefuture.com)
-2. Log in with your GitHub account
-3. Click **API Key** → generate a new key pair
-4. Copy the API key and secret
-
-### 5. Set environment variables
+4. Configure credentials:
 
 ```bash
-# Windows (Command Prompt)
-set BINANCE_TESTNET_API_KEY=your_api_key_here
-set BINANCE_TESTNET_API_SECRET=your_api_secret_here
-
 # Windows (PowerShell)
 $env:BINANCE_TESTNET_API_KEY="your_api_key_here"
 $env:BINANCE_TESTNET_API_SECRET="your_api_secret_here"
 
-# macOS / Linux
+# macOS/Linux
 export BINANCE_TESTNET_API_KEY="your_api_key_here"
 export BINANCE_TESTNET_API_SECRET="your_api_secret_here"
 ```
 
-Alternatively, pass them directly via `--api-key` and `--api-secret` flags (see examples below).
+You can also create a local .env file from .env.example.
 
----
+## Run The App
 
-## How to Run
-
-All commands are run from **inside the `trading_bot/` directory**.
-
-### Place a MARKET BUY order
+Use one of these commands from the project root:
 
 ```bash
-python -m bot.cli place --symbol BTCUSDT --side BUY --type MARKET --qty 0.001
+python __main__.py serve --host 127.0.0.1 --port 8000
 ```
 
-### Place a MARKET SELL order
+or:
 
 ```bash
-python -m bot.cli place --symbol ETHUSDT --side SELL --type MARKET --qty 0.01
+python -m bot.cli.main serve --host 127.0.0.1 --port 8000
 ```
 
-### Place a LIMIT BUY order
+When running successfully, the API is available at:
+
+- http://127.0.0.1:8000
+- Swagger docs: http://127.0.0.1:8000/docs
+
+## API Usage Examples
+
+Get account snapshot:
 
 ```bash
-python -m bot.cli place --symbol BTCUSDT --side BUY --type LIMIT --qty 0.001 --price 85000
+curl http://127.0.0.1:8000/account
 ```
 
-### Place a LIMIT SELL order
+Get only open positions:
 
 ```bash
-python -m bot.cli place --symbol ETHUSDT --side SELL --type LIMIT --qty 0.01 --price 3500
+curl http://127.0.0.1:8000/positions
 ```
 
-### Place a STOP_MARKET order (bonus order type)
+Publish a manual signal/order request:
 
 ```bash
-python -m bot.cli place --symbol BTCUSDT --side SELL --type STOP_MARKET --qty 0.001 --price 58000
+curl -X POST http://127.0.0.1:8000/order \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"BTCUSDT","side":"BUY","type":"MARKET","quantity":0.01}'
 ```
 
-### View account balances
+Get recent persisted orders:
 
 ```bash
-python -m bot.cli account
+curl http://127.0.0.1:8000/orders
 ```
 
-### Pass API keys directly (without env vars)
+## Event Pipeline
+
+```text
+WebSocket MARKET_DATA
+  -> Strategy SIGNAL
+  -> Risk ORDER_REQUEST
+  -> Execution ORDER_FILLED/ERROR
+  -> Database persistence
+```
+
+## Run Tests
 
 ```bash
-python -m bot.cli --api-key YOUR_KEY --api-secret YOUR_SECRET place \
-  --symbol BTCUSDT --side BUY --type MARKET --qty 0.001
+python -m pytest -q
 ```
 
-### Adjust log verbosity
+or run specific tests:
 
 ```bash
-python -m bot.cli --log-level INFO place --symbol BTCUSDT --side BUY --type MARKET --qty 0.001
+python -m pytest -q tests/test_api.py tests/test_risk.py
 ```
-
----
-
-## Sample Output
-
-```
-┌── ORDER REQUEST ───────────────────────────────────────
-│  Symbol         BTCUSDT
-│  Side           BUY
-│  Order Type     MARKET
-│  Quantity       0.001
-│  Price          N/A (MARKET)
-└───────────────────────────────────────────────────────
-
-┌── ORDER RESPONSE ──────────────────────────────────────
-│  Order ID       4134076736
-│  Client OID     x-xcKtGhcu67c4b3b5e0ae0d
-│  Symbol         BTCUSDT
-│  Side           BUY
-│  Type           MARKET
-│  Status         FILLED
-│  Orig Qty       0.001
-│  Executed Qty   0.001
-│  Avg Price      97350.00
-│  Limit Price    —
-└───────────────────────────────────────────────────────
-
-✔  Order placed successfully!
-```
-
----
 
 ## Logging
 
-All API requests, responses, and errors are logged to `logs/trading_bot.log`.
+- Console logging follows configured log level.
+- Rotating JSON logs are written to logs/trading_bot.json.
+- Uvicorn logs are integrated into the same logging config.
 
-- **File handler:** DEBUG level, rotating (5 MB × 3 backups)
-- **Console handler:** WARNING and above only (keeps CLI output clean)
+## Important Notes
 
-Log format:
-```
-2025-01-15 14:22:01 | INFO     | trading_bot.orders | Placing order | symbol=BTCUSDT side=BUY type=MARKET qty=0.001 price=N/A
-2025-01-15 14:22:01 | DEBUG    | trading_bot.client | → POST /fapi/v1/order | params: {'symbol': 'BTCUSDT', ...}
-2025-01-15 14:22:02 | DEBUG    | trading_bot.client | ← HTTP 200 | body: {"orderId":4134076736,...}
-2025-01-15 14:22:02 | INFO     | trading_bot.orders | Order accepted | orderId=4134076736 status=FILLED executedQty=0.001 avgPrice=97350.00
-```
-
-Sample log files are included in `logs/` for reference.
-
----
-
-## Validation & Error Handling
-
-| Scenario | Behaviour |
-|----------|-----------|
-| Invalid symbol (not `*USDT`) | Clear error message, non-zero exit code |
-| Invalid side (not BUY/SELL) | Clear error message, logged |
-| LIMIT order missing price | Clear error message |
-| Negative / zero quantity | Clear error message |
-| Binance API error (e.g. -2019) | Parsed error code + message displayed and logged |
-| Network timeout | Retried 3× with backoff; clear error on final failure |
-| Non-JSON response | Logged and surfaced as error |
-
----
-
-## Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| `requests` only (no `python-binance`) | Full control over signing, retries, and logging; fewer hidden abstractions |
-| Separate `client.py` / `orders.py` / `validators.py` / `cli.py` | Strict layer separation — testable independently |
-| `OrderResult` dataclass | Decouples display logic from raw API response; easy to extend |
-| Rotating file handler | Prevents unbounded log growth in long-running use |
-| HMAC-SHA256 signing in `client.py` only | Keeps auth logic in one place |
-| `STOP_MARKET` as bonus order type | Demonstrates extensibility of the order layer |
-
----
-
-## Assumptions
-
-1. **Testnet only** — the base URL is hardcoded to `https://testnet.binancefuture.com`. Do not use production keys.
-2. Quantities must meet Binance minimum notional and lot size filters for each symbol. If your order is rejected with error `-2019` or `-1111`, adjust `--qty` accordingly (e.g. `0.001` for BTCUSDT is typically the minimum).
-3. The testnet periodically resets balances — if you see balance errors, log in to the testnet portal and request a balance refresh.
-4. `timeInForce` defaults to `GTC` (Good Till Cancelled) for all LIMIT orders.
+1. Testnet only: default base URL is https://testnet.binancefuture.com.
+2. Signed endpoints require valid API key and secret.
+3. Risk engine currently enforces quantity and max position-size checks.
+4. If you change event payload structure, update strategy, risk, execution, and DB parsing together.
